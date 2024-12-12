@@ -100,6 +100,8 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 		m_family = FAMILY_MSO5;
 	else if(m_model.find("MSO6") == 0)
 		m_family = FAMILY_MSO6;
+	else if(m_model.find("MDO4") == 0)
+		m_family = FAMILY_MDO4;
 	else
 		m_family = FAMILY_UNKNOWN;
 
@@ -121,6 +123,7 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 	//Device specific initialization
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			m_transport->SendCommandQueued("ACQ:MOD SAM");				//actual sampled data, no averaging etc
@@ -272,35 +275,36 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 			m_channels.push_back(m_extTrigChannel);
 			break;
 	}
-
-	string reply = m_transport->SendCommandQueuedWithReply("LICENSE:APPID?", false);
-	reply = reply.substr(1, reply.size() - 2); // Chop off quotes
-	vector<string> apps;
-	stringstream s_stream(reply);
-	while(s_stream.good()) {
-		string substr;
-		getline(s_stream, substr, ',');
-		apps.push_back(substr);
-	}
-
-	for (auto app : apps)
-	{
-		if (app == "DVM")
-		{
-			m_hasDVM = true;
-			LogDebug(" * Tek has DVM\n");
-		}
-		else if (app == "AFG")
-		{
-			m_hasAFG = true;
-			LogDebug(" * Tek has AFG\n");
-		}
-		else
-		{
-			LogDebug("(* Tek also has '%s' (ignored))\n", app.c_str());
+	if (m_family != FAMILY_MDO4) {
+		string reply = m_transport->SendCommandQueuedWithReply("LICENSE:APPID?", false);
+		reply = reply.substr(1, reply.size() - 2); // Chop off quotes
+		vector<string> apps;
+		stringstream s_stream(reply);
+		while(s_stream.good()) {
+			string substr;
+			getline(s_stream, substr, ',');
+			apps.push_back(substr);
 		}
 
-		// Bandwidth expanding options reflected in earlier query for max B/W
+		for (auto app : apps)
+		{
+			if (app == "DVM")
+			{
+				m_hasDVM = true;
+				LogDebug(" * Tek has DVM\n");
+			}
+			else if (app == "AFG")
+			{
+				m_hasAFG = true;
+				LogDebug(" * Tek has AFG\n");
+			}
+			else
+			{
+				LogDebug("(* Tek also has '%s' (ignored))\n", app.c_str());
+			}
+
+			// Bandwidth expanding options reflected in earlier query for max B/W
+		}
 	}
 
 	//Add AWG channel
@@ -538,6 +542,10 @@ bool TektronixOscilloscope::IsChannelEnabled(size_t i)
 	string reply;
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			reply = m_transport->SendCommandQueuedWithReply(
+				string("SEL:") + ochan->GetHwname() + "?");
+			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 
@@ -625,6 +633,9 @@ void TektronixOscilloscope::EnableChannel(size_t i)
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			m_transport->SendCommandQueued(string("SEL:") + GetOscilloscopeChannel(i)->GetHwname() + "ON");
+			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			if(IsSpectrum(i))
@@ -701,6 +712,9 @@ void TektronixOscilloscope::DisableChannel(size_t i)
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			m_transport->SendCommandQueued(string("SEL:") + GetOscilloscopeChannel(i)->GetHwname() + "OFF");
+			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			if(IsSpectrum(i))
@@ -731,6 +745,7 @@ OscilloscopeChannel::CouplingType TektronixOscilloscope::GetChannelCoupling(size
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
@@ -876,6 +891,16 @@ double TektronixOscilloscope::GetChannelAttenuation(size_t i)
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			{
+				float probegain = stof(
+					m_transport->SendCommandQueuedWithReply(GetOscilloscopeChannel(i)->GetHwname() + ":PRO:GAIN?"));
+
+				double atten = 1 / probegain;
+				m_channelAttenuations[i] = atten;
+				return atten;
+				break;
+			}
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
@@ -961,6 +986,7 @@ unsigned int TektronixOscilloscope::GetChannelBandwidthLimit(size_t i)
 	{
 		switch(m_family)
 		{
+			case FAMILY_MDO4:
 			case FAMILY_MSO5:
 			case FAMILY_MSO6:
 				{
@@ -1114,6 +1140,7 @@ float TektronixOscilloscope::GetChannelVoltageRange(size_t i, size_t /*stream*/)
 	{
 		switch(m_family)
 		{
+			case FAMILY_MDO4:
 			case FAMILY_MSO5:
 			case FAMILY_MSO6:
 				if(IsSpectrum(i))
@@ -1197,7 +1224,7 @@ Unit TektronixOscilloscope::GetYAxisUnit(size_t i)
 	{
 		Unit u(Unit::UNIT_VOLTS);
 		auto reply = Trim(m_transport->SendCommandQueuedWithReply(
-			GetOscilloscopeChannel(i)->GetHwname() + ":PROBE:UNI?"));
+			GetOscilloscopeChannel(i)->GetHwname() + ":YUN?"));
 
 		//Note that the unit is *in quotes*!
 		char unit[128] = {0};
@@ -1284,6 +1311,9 @@ string TektronixOscilloscope::GetChannelDisplayName(size_t i)
 	{
 		switch(m_family)
 		{
+			case FAMILY_MDO4:
+				name = TrimQuotes(m_transport->SendCommandQueuedWithReply(chan->GetHwname() + ":LAB?"));
+				break;
 			//What a shocker!
 			//Completely orthogonal design for analog and digital, and it even handles empty strings well!
 			case FAMILY_MSO5:
@@ -1361,6 +1391,7 @@ float TektronixOscilloscope::GetChannelOffset(size_t i, size_t stream)
 	{
 		switch(m_family)
 		{
+			case FAMILY_MDO4:
 			case FAMILY_MSO5:
 			case FAMILY_MSO6:
 				if(IsSpectrum(i))
@@ -1485,6 +1516,7 @@ bool TektronixOscilloscope::AcquireData()
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			if(!AcquireDataMSO56(pending_waveforms))
@@ -1675,6 +1707,17 @@ bool TektronixOscilloscope::ReadPreamble(string& preamble_in, mso56_preamble& pr
 
 		if (read == 21) return true;
 	}
+	else if (semicolons == 21)
+	{
+		read = sscanf(preamble_in.c_str(),
+			"%d;%d;%31[^;];%31[^;];%31[^;];%255[^;];%d;%c;%31[^;];"
+			"%31[^;];%lf;%lf;%d;%31[^;];%lf;%lf;%lf;%31[^;];%31[^;];%lf;%lf",
+			&p.byte_num, &p.bit_num, p.encoding, p.bin_format, p.byte_order, p.wfid,
+			&p.nr_pt, p.pt_fmt, p.pt_order, p.xunit, &p.xincrement, &p.xzero,
+			&p.pt_off, p.yunit,	&p.ymult, &p.yoff, &p.yzero, p.domain, p.wfmtype, &p.centerfreq, &p.span);
+		strcpy(p.asc_format, "INTEGER");
+		if (read == 21) return true;
+	}
 	else
 		LogError("Unsupported preamble format (semicolons=%zu)\n", semicolons);
 
@@ -1723,7 +1766,7 @@ void TektronixOscilloscope::ResynchronizeSCPI()
 		if(prbs3[i])
 			reply = m_transport->SendCommandQueuedWithReply("*IDN?");	//should return a string starting with "TEKTRONIX"
 		else
-			reply = m_transport->SendCommandQueuedWithReply("HOR:MODE:RECO?");	//should return a number
+			reply = m_transport->SendCommandQueuedWithReply("HOR:RECO?");	//should return a number
 
 		if(reply.find("TEKTRONIX") != string::npos)
 			replies[i] = 1;
@@ -2423,6 +2466,11 @@ uint64_t TektronixOscilloscope::GetSampleRate()
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			//stoull seems to not handle scientific notation
+			m_sampleRate = stod(m_transport->SendCommandQueuedWithReply("HOR:SAMPLER?"));
+
+			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 
@@ -2447,6 +2495,11 @@ uint64_t TektronixOscilloscope::GetSampleDepth()
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			m_sampleDepth = stos(m_transport->SendCommandQueuedWithReply("HOR:RECO?"));
+			m_transport->SendCommandQueued("DAT:START 0");
+			m_transport->SendCommandQueued(string("DAT:STOP ") + to_string(m_sampleDepth));
+			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			m_sampleDepth = stos(m_transport->SendCommandQueuedWithReply("HOR:MODE:RECO?"));
@@ -2554,6 +2607,7 @@ int64_t TektronixOscilloscope::GetTriggerOffset()
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 		{
@@ -2697,6 +2751,7 @@ void TektronixOscilloscope::PullTrigger()
 {
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
