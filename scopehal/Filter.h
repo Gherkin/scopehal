@@ -2,7 +2,7 @@
 *                                                                                                                      *
 * libscopehal                                                                                                          *
 *                                                                                                                      *
-* Copyright (c) 2012-2024 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2025 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -706,6 +706,8 @@ public:
 
 		samples.clear();
 		samples.SetGpuAccessHint(AcceleratorBuffer<S>::HINT_NEVER);	//assume we're being used as part of a CPU-side filter
+		samples.Reserve(1 * 1024 * 1024);	//preallocate 1 MB sample buffer to avoid lots of reallocation when small
+											//if it's smaller than this, we won't waste a lot of memory
 		samples.PrepareForCpuAccess();
 
 		//TODO: split up into blocks and multithread?
@@ -803,6 +805,8 @@ public:
 
 		samples.clear();
 		samples.SetGpuAccessHint(AcceleratorBuffer<S>::HINT_NEVER);	//assume we're being used as part of a CPU-side filter
+		samples.Reserve(1 * 1024 * 1024);	//preallocate 1 MB sample buffer to avoid lots of reallocation when small
+											//if it's smaller than this, we won't waste a lot of memory
 
 		//TODO: split up into blocks and multithread?
 		//TODO: AVX vcompress?
@@ -899,6 +903,8 @@ public:
 
 		samples.clear();
 		samples.SetGpuAccessHint(AcceleratorBuffer<S>::HINT_NEVER);	//assume we're being used as part of a CPU-side filter
+		samples.Reserve(1 * 1024 * 1024);	//preallocate 1 MB sample buffer to avoid lots of reallocation when small
+											//if it's smaller than this, we won't waste a lot of memory
 
 		//TODO: split up into blocks and multithread?
 		//TODO: AVX vcompress?
@@ -957,6 +963,8 @@ public:
 
 		samples.clear();
 		samples.SetGpuAccessHint(AcceleratorBuffer<float>::HINT_NEVER);	//assume we're being used as part of a CPU-side filter
+		samples.Reserve(1 * 1024 * 1024);	//preallocate 1 MB sample buffer to avoid lots of reallocation when small
+											//if it's smaller than this, we won't waste a lot of memory
 
 		//TODO: split up into blocks and multithread?
 		//TODO: AVX vcompress
@@ -1129,6 +1137,22 @@ public:
 	}
 
 	static void ClearAnalysisCache();
+
+	enum FIRFilterType
+	{
+		FILTER_TYPE_LOWPASS,
+		FILTER_TYPE_HIGHPASS,
+		FILTER_TYPE_BANDPASS,
+		FILTER_TYPE_NOTCH
+	};
+
+	static void CalculateFIRCoefficients(
+		float fa,
+		float fb,
+		float stopbandAtten,
+		FIRFilterType type,
+		AcceleratorBuffer<float>& coefficients);
+	static float Bessel(float x);
 
 protected:
 	//Helpers for sparse waveforms

@@ -2,7 +2,7 @@
 *                                                                                                                      *
 * libscopehal                                                                                                          *
 *                                                                                                                      *
-* Copyright (c) 2012-2024 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2025 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -1065,6 +1065,7 @@ void LeCroyOscilloscope::FlushConfigCache()
 	m_channelsEnabled.clear();
 	m_channelDeskew.clear();
 	m_probeIsActive.clear();
+	m_channelIsInverted.clear();
 	m_channelNavg.clear();
 	m_sampleRateValid = false;
 	m_memoryDepthValid = false;
@@ -1652,6 +1653,14 @@ void LeCroyOscilloscope::Invert(size_t i, bool invert)
 		m_transport->SendCommandQueued(string("VBS 'app.Acquisition.") + GetOscilloscopeChannel(i)->GetHwname() + ".Invert = true'");
 	else
 		m_transport->SendCommandQueued(string("VBS 'app.Acquisition.") + GetOscilloscopeChannel(i)->GetHwname() + ".Invert = false'");
+
+	{
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		m_channelIsInverted[i] = invert;
+	}
+
+	//When changing inversion status, refresh the trigger in case the trigger source was inverted
+	PullTrigger();
 }
 
 bool LeCroyOscilloscope::IsInverted(size_t i)
@@ -1659,9 +1668,23 @@ bool LeCroyOscilloscope::IsInverted(size_t i)
 	if(i >= m_analogChannelCount)
 		return false;
 
+	//Check cache
+	{
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		auto it = m_channelIsInverted.find(i);
+		if(it != m_channelIsInverted.end())
+			return it->second;
+	}
+
 	auto reply = Trim(m_transport->SendCommandQueuedWithReply(
 		string("VBS? 'return = app.Acquisition.") + GetOscilloscopeChannel(i)->GetHwname() + ".Invert'"));
-	return (reply == "-1");
+	bool inverted = (reply == "-1");
+
+	{
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		m_channelIsInverted[i] = inverted;
+	}
+	return inverted;
 }
 
 string LeCroyOscilloscope::GetProbeName(size_t i)
@@ -2814,6 +2837,12 @@ bool LeCroyOscilloscope::AcquireData()
 			}
 		}
 
+		//If we are using a CDR trigger, for some reason timestamps don't work
+		//https://github.com/ngscopeclient/scopehal/issues/959
+		//Unless LeCroy gets us a better workaround (TLC#00367891), just use clientside clock
+		if(dynamic_cast<CDRTrigger*>(GetTrigger()) != nullptr)
+			useClientsideTimestamp = true;
+
 		//See if any digital channels are enabled
 		if(m_digitalChannelCount > 0)
 		{
@@ -3043,6 +3072,10 @@ float LeCroyOscilloscope::GetChannelOffset(size_t i, size_t /*stream*/)
 	float offset;
 	sscanf(reply.c_str(), "%f", &offset);
 
+	//Correct for frontend inversion
+	if(IsInverted(i))
+		offset = -offset;
+
 	lock_guard<recursive_mutex> lock(m_cacheMutex);
 	m_channelOffsets[i] = offset;
 	return offset;
@@ -3055,7 +3088,10 @@ void LeCroyOscilloscope::SetChannelOffset(size_t i, size_t /*stream*/, float off
 		return;
 
 	char tmp[128];
-	snprintf(tmp, sizeof(tmp), "%s:OFFSET %f", GetOscilloscopeChannel(i)->GetHwname().c_str(), offset);
+	if(IsInverted(i))
+		snprintf(tmp, sizeof(tmp), "%s:OFFSET %f", GetOscilloscopeChannel(i)->GetHwname().c_str(), -offset);
+	else
+		snprintf(tmp, sizeof(tmp), "%s:OFFSET %f", GetOscilloscopeChannel(i)->GetHwname().c_str(), offset);
 	m_transport->SendCommandQueued(tmp);
 
 	lock_guard<recursive_mutex> lock(m_cacheMutex);
@@ -3339,7 +3375,18 @@ vector<uint64_t> LeCroyOscilloscope::GetSampleDepthsNonInterleaved()
 		ret.push_back(1 * m);
 		ret.push_back(2500 * k);
 		ret.push_back(2 * m);
-		ret.push_back(5 * m);
+		switch(m_modelid)
+		{
+			case MODEL_SDA_8ZI:
+			case MODEL_SDA_8ZI_A:
+			case MODEL_SDA_8ZI_B:
+				ret.push_back(4 * m);
+				break;
+
+			default:
+				ret.push_back(5 * m);
+				break;
+		}
 		ret.push_back(10 * m);
 
 		switch(m_modelid)
@@ -4169,6 +4216,11 @@ void LeCroyOscilloscope::PullTrigger()
 	PullTriggerSource(m_trigger);
 
 	//TODO: holdoff
+
+	//Invert the trigger level if the source is inverted
+	auto trigSource = m_trigger->GetInput(0);
+	if(trigSource.IsInverted())
+		m_trigger->SetLevel(-m_trigger->GetLevel());
 }
 
 /**
@@ -5194,11 +5246,23 @@ void LeCroyOscilloscope::Push8b10bTrigger(CDR8B10BTrigger* trig)
 }
 
 /**
+	@brief Returns the trigger level after correcting for optional frontend inversion
+ */
+float LeCroyOscilloscope::GetTriggerLevelWithInversion(Trigger* trig)
+{
+	auto trigSource = trig->GetInput(0);
+	if(trigSource.IsInverted())
+		return -trig->GetLevel();
+	else
+		return trig->GetLevel();
+}
+
+/**
 	@brief Pushes settings for a dropout trigger to the instrument
  */
 void LeCroyOscilloscope::PushDropoutTrigger(DropoutTrigger* trig)
 {
-	PushFloat("app.Acquisition.Trigger.Dropout.Level", trig->GetLevel());
+	PushFloat("app.Acquisition.Trigger.Dropout.Level", GetTriggerLevelWithInversion(trig));
 	PushFloat("app.Acquisition.Trigger.Dropout.DropoutTime", trig->GetDropoutTime() * SECONDS_PER_FS);
 
 	if(trig->GetResetType() == DropoutTrigger::RESET_OPPOSITE)
@@ -5219,9 +5283,9 @@ void LeCroyOscilloscope::PushEdgeTrigger(EdgeTrigger* trig, const string& tree)
 {
 	//Level
 	if(m_modelid == MODEL_DDA_5K)
-		PushFloat("app.Acquisition.Trigger.TrigLevel", trig->GetLevel());
+		PushFloat("app.Acquisition.Trigger.TrigLevel", GetTriggerLevelWithInversion(trig));
 	else
-		PushFloat(tree + ".Level", trig->GetLevel());
+		PushFloat(tree + ".Level", GetTriggerLevelWithInversion(trig));
 
 	//Slope
 	string slope = "Positive";
@@ -5318,7 +5382,7 @@ void LeCroyOscilloscope::PushSlewRateTrigger(SlewRateTrigger* trig)
 void LeCroyOscilloscope::PushUartTrigger(UartTrigger* trig)
 {
 	//Special parameter for trigger level
-	PushFloat("app.Acquisition.Trigger.Serial.LevelAbsolute", trig->GetLevel());
+	PushFloat("app.Acquisition.Trigger.Serial.LevelAbsolute", GetTriggerLevelWithInversion(trig));
 
 	//AtPosition
 	//Bit9State

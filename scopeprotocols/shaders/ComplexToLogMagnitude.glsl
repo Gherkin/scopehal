@@ -2,7 +2,7 @@
 *                                                                                                                      *
 * libscopeprotocols                                                                                                    *
 *                                                                                                                      *
-* Copyright (c) 2012-2022 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2025 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -50,14 +50,16 @@ layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
 
 void main()
 {
+	uint i = (gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
+
 	//If off end of array, stop
-	if(gl_GlobalInvocationID.x >= npoints)
+	if(i >= npoints)
 		return;
 
-	float real = din[gl_GlobalInvocationID.x*2];
-	float imag = din[gl_GlobalInvocationID.x*2 + 1];
+	float real = din[i*2];
+	float imag = din[i*2 + 1];
 
 	float v = real*real + imag*imag;
 
-	dout[gl_GlobalInvocationID.x] = (10 * log(v * scale) / log(10)) + 30;
+	dout[i] = (10 * log(v * scale) / log(10)) + 30;
 }

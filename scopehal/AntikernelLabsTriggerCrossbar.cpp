@@ -2,7 +2,7 @@
 *                                                                                                                      *
 * libscopehal                                                                                                          *
 *                                                                                                                      *
-* Copyright (c) 2012-2024 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2025 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -435,7 +435,7 @@ void AntikernelLabsTriggerCrossbar::SetMuxOutputDrive(size_t dstchan, float v)
 	m_transport->SendCommandQueued(m_channels[dstchan]->GetHwname() + ":LEV " + to_string(mv));
 }
 
-bool AntikernelLabsTriggerCrossbar::MuxHasConfigurableThreshold(size_t dstchan)
+bool AntikernelLabsTriggerCrossbar::MuxHasConfigurableThreshold([[maybe_unused]] size_t dstchan)
 {
 	return true;
 }
@@ -1454,13 +1454,21 @@ void AntikernelLabsTriggerCrossbar::PullTrigger()
 	//for now, set a default edge trigger
 	//(this is fake, but it'll do for starting out to enable control of trigger position)
 	auto trig = new EdgeTrigger(this);
-	trig->SetInput(0, GetOscilloscopeChannel(m_rxChannelBase));
+
+	auto source = Trim(m_transport->SendCommandQueuedWithReply("TRIGMUX?"));
+	auto chan = GetChannel(atoi(source.c_str()));
+	chan->m_visibilityMode = InstrumentChannel::VIS_SHOW;
+
+	trig->SetInput(0, chan);
 	m_trigger = trig;
 }
 
 void AntikernelLabsTriggerCrossbar::PushTrigger()
 {
-	//no-op for now
+	//Push mux selector
+	auto chan = m_trigger->GetInput(0);
+	if(chan)
+		m_transport->SendCommandQueued(string("TRIGMUX " ) + to_string(chan.m_channel->GetIndex()));
 }
 
 void AntikernelLabsTriggerCrossbar::Start()

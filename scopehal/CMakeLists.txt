@@ -74,6 +74,9 @@ set(SCOPEHAL_SOURCES
 	EyeMask.cpp
 	EyeWaveform.cpp
 
+	Averager.cpp
+	LevelCrossingDetector.cpp
+
 	SCPITransport.cpp
 	SCPISocketTransport.cpp
 	SCPITwinLanTransport.cpp
@@ -181,6 +184,7 @@ set(SCOPEHAL_SOURCES
 	RigolFunctionGenerator.cpp
 	RigolOscilloscope.cpp
 	SiglentLoad.cpp
+	SiglentFunctionGenerator.cpp
 	SiglentPowerSupply.cpp
 	SiglentSCPIOscilloscope.cpp
 	SiglentVectorSignalGenerator.cpp
@@ -245,10 +249,15 @@ target_link_libraries(scopehal
 	Vulkan::Loader
 	Vulkan::Headers
 	glslang::glslang
-	glslang::SPIRV
 	glfw
 	${WIN_LIBS}
 	)
+
+if(TARGET glslang::SPIRV)
+	target_link_libraries(scopehal
+		glslang::SPIRV
+	)
+endif()
 
 if(LXI_FOUND)
 	target_link_libraries(scopehal

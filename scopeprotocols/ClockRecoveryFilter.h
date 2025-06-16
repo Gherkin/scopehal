@@ -2,7 +2,7 @@
 *                                                                                                                      *
 * libscopeprotocols                                                                                                    *
 *                                                                                                                      *
-* Copyright (c) 2012-2022 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2025 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -50,6 +50,31 @@ public:
 	PROTOCOL_DECODER_INITPROC(ClockRecoveryFilter)
 
 protected:
+	void FillSquarewaveGeneric(SparseDigitalWaveform& cap);
+
+	void InnerLoopWithGating(
+		SparseDigitalWaveform& cap,
+		std::vector<int64_t>& edges,
+		int64_t tend,
+		int64_t initialPeriod,
+		int64_t halfPeriod,
+		int64_t fnyquist,
+		WaveformBase* gate,
+		SparseDigitalWaveform* sgate,
+		UniformDigitalWaveform* ugate);
+
+	void InnerLoopWithNoGating(
+		SparseDigitalWaveform& cap,
+		std::vector<int64_t>& edges,
+		int64_t tend,
+		int64_t initialPeriod,
+		int64_t halfPeriod,
+		int64_t fnyquist);
+
+#ifdef __x86_64__
+	void FillSquarewaveAVX2(SparseDigitalWaveform& cap);
+#endif
+
 	std::string m_baudname;
 	std::string m_threshname;
 };

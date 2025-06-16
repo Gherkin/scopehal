@@ -33,7 +33,11 @@ add_compute_shaders(
 		Convert8BitSamplesWithClipDetection.glsl
 		Convert16BitSamples.glsl
 		DeEmbedFilter.glsl
+		FindZeroCrossings.glsl
+		Gather.glsl
+		PreGather.glsl
 		RectangularWindow.glsl
+		ReductionSum.glsl
 	)
 
 add_dependencies(scopehal halshaders)

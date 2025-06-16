@@ -2,7 +2,7 @@
 *                                                                                                                      *
 * libscopeprotocols                                                                                                    *
 *                                                                                                                      *
-* Copyright (c) 2012-2024 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2025 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -276,7 +276,10 @@ void FFTFilter::DoRefresh(
 	}
 	wpipe->BindBufferNonblocking(0, data, cmdBuf);
 	wpipe->BindBufferNonblocking(1, m_rdinbuf, cmdBuf, true);
-	wpipe->Dispatch(cmdBuf, args, GetComputeBlockCount(npoints, 64));
+	const uint32_t compute_block_count = GetComputeBlockCount(npoints, 64);
+	wpipe->Dispatch(cmdBuf, args,
+		min(compute_block_count, 32768u),
+		compute_block_count / 32768 + 1);
 	wpipe->AddComputeMemoryBarrier(cmdBuf);
 	m_rdinbuf.MarkModifiedFromGpu();
 
@@ -298,7 +301,9 @@ void FFTFilter::DoRefresh(
 	pipe.BindBuffer(0, m_rdoutbuf);
 	pipe.BindBuffer(1, cap->m_samples);
 	pipe.AddComputeMemoryBarrier(cmdBuf);
-	pipe.Dispatch(cmdBuf, cargs, GetComputeBlockCount(nouts, 64));
+	pipe.Dispatch(cmdBuf, cargs,
+		min(compute_block_count, 32768u),
+		compute_block_count / 32768 + 1);
 
 	//Done, block until the compute operations finish
 	cmdBuf.end();
@@ -307,5 +312,5 @@ void FFTFilter::DoRefresh(
 	cap->MarkModifiedFromGpu();
 
 	//Peak search (for now this runs on the CPU)
-	FindPeaks(cap);
+	FindPeaks(cap, cmdBuf, queue);
 }
