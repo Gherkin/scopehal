@@ -1,6 +1,6 @@
 /***********************************************************************************************************************
 *                                                                                                                      *
-* libscopehal                                                                                                          *
+* libscopeprotocols                                                                                                    *
 *                                                                                                                      *
 * Copyright (c) 2012-2025 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
@@ -27,116 +27,72 @@
 *                                                                                                                      *
 ***********************************************************************************************************************/
 
-/**
-	@file
-	@author Andrew D. Zonenberg
-	@brief Declaration of IDTable class
-	@ingroup core
- */
-#ifndef IDTable_h
-#define IDTable_h
+#version 430
+#pragma shader_stage(compute)
 
-#include "SerializableObject.h"
-
-/**
-	@brief Bidirectional table mapping integer IDs in scopesession files to object pointers
-	@ingroup core
-
-	No type information is stored, the caller is responsible for knowing what type of object is being stored
-	in the table.
-
-	TODO: can we store RTTI info along with the objects to sanity check that we're using the right kind of object
- */
-class IDTable : public Bijection<uintptr_t, SerializableObject*>
+layout(std430, binding=0) restrict writeonly buffer buf_dout
 {
-public:
-	IDTable()
-	: m_nextID(1)
-	{
-		emplace(0, nullptr);
-	}
-
-	/**
-		@brief Store a new object in the table
-
-		@param p		Pointer to the object
-
-		@return The ID of the object
-	 */
-	uintptr_t emplace(SerializableObject* p)
-	{
-		if(HasID(p))
-			return m_reverseMap[p];
-
-		uint32_t id = m_nextID ++;
-		Bijection::emplace(id, p);
-		return id;
-	}
-
-	/**
-		@brief Store a new object in the table using a specific ID
-
-		@param id		ID to assign to the object
-		@param p		Pointer to the object
-	 */
-	void emplace(uintptr_t id, SerializableObject* p)
-	{
-		ReserveID(id);
-		Bijection::emplace(id, p);
-	}
-
-	/**
-		@brief Checks if we have an object at a specific pointer
-
-		@param p		Pointer to the object
-	 */
-	bool HasID(SerializableObject* p)
-	{ return (m_reverseMap.find(p) != m_reverseMap.end()); }
-
-	/**
-		@brief Checks if we have an object with a specific ID
-
-		@param id		ID of the object
-	 */
-	bool HasID(uintptr_t id)
-	{ return (m_forwardMap.find(id) != m_forwardMap.end()); }
-
-	/**
-		@brief Marks an ID as unavailable for use, without assigning an pointer to it
-	 */
-	void ReserveID(uintptr_t id)
-	{ m_nextID = std::max(m_nextID, id+1); }
-
-	/**
-		@brief Type-safe object lookup
-	 */
-	template<class T>
-	T Lookup(uintptr_t id)
-	{ return dynamic_cast<T>(m_forwardMap[id]); }
-
-	///@brief Legacy object lookup
-	[[deprecated]]
-	SerializableObject* operator[](uintptr_t key)
-	{ return m_forwardMap[key]; }
-
-	///@brief Forward lookup
-	uintptr_t operator[](SerializableObject* key)
-	{ return m_reverseMap[key]; }
-
-	/**
-		@brief Deletes all entries from the table
-	 */
-	virtual void clear()
-	{
-		m_forwardMap.clear();
-		m_reverseMap.clear();
-		m_nextID = 1;
-	}
-
-protected:
-
-	///@brief Index of the next ID to be assigned
-	uintptr_t m_nextID;
+	float dout[];
 };
 
-#endif
+layout(std430, push_constant) uniform constants
+{
+	uint numSamples;
+	uint samplesPerThread;
+	uint rngSeed;
+	float startPhase;
+	float scale;
+	float sigma;
+	float radiansPerSample;
+};
+
+layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
+
+void main()
+{
+	//Base thread ID
+	uint nthread = (gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
+
+	//Bounds for our generation
+	uint istart = nthread * samplesPerThread;
+	uint iend = istart + samplesPerThread;
+	if(iend >= numSamples)
+		iend = numSamples - 1;
+
+	const float twopi = 2 * 3.1415926535;
+
+	//Create the output
+	uint lcgState = rngSeed + nthread;
+	for(uint i=istart; i <= iend; i += 2)
+	{
+		//Generate two pseudorandom uint32's with the first being nonzero
+		//Use glibc rand() parameters
+		uint rngOut[2] = {0, 0};
+		uint rngmax = 0xffffff;
+		for(uint j=0; j<2; j++)
+		{
+			while(rngOut[j] == 0)
+			{
+				lcgState = ( (lcgState * 1103515245) + 12345 ) & 0x7fffffff;
+				rngOut[j] = lcgState & rngmax;
+
+				if(j == 1)
+					break;
+			}
+		}
+
+		//Convert the random ints to floats in [0, 1]
+		float u1 = float(rngOut[0]) / float(rngmax);
+		float u2 = float(rngOut[1]) / float(rngmax);
+
+		//Convert to uniform distribution using Box-Muller
+		float mag = sigma * sqrt(-2 * log(u1));
+		float noise0 = mag * cos(twopi * u2);
+		float noise1 = mag * sin(twopi * u2);
+
+		//Generate the output (second sample needs separate bounds check)
+		dout[i] = scale * sin(i * radiansPerSample + startPhase) + noise0;
+		if(i+1 <= iend)
+			dout[i+1] = scale * sin((i+1) * radiansPerSample + startPhase) + noise1;
+	}
+}

@@ -2,7 +2,7 @@
 *                                                                                                                      *
 * libscopeprotocols                                                                                                    *
 *                                                                                                                      *
-* Copyright (c) 2012-2023 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2025 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -104,7 +104,9 @@ string ClockRecoveryFilter::GetProtocolName()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Actual decoder logic
 
-void ClockRecoveryFilter::Refresh()
+void ClockRecoveryFilter::Refresh(
+	[[maybe_unused]] vk::raii::CommandBuffer& cmdBuf,
+	[[maybe_unused]] shared_ptr<QueueHandle> queue)
 {
 	//Require a data signal, but not necessarily a gate
 	if(!VerifyInputOK(0))
@@ -344,7 +346,7 @@ void ClockRecoveryFilter::InnerLoopWithGating(
 				if(dphase < -halfPeriod)
 					dphase += period;
 
-				total_error += fabs(dphase);
+				total_error += i64abs(dphase);
 
 				//Find frequency error
 				int64_t uiLen = (tnext - tlast);
@@ -450,7 +452,7 @@ void ClockRecoveryFilter::InnerLoopWithNoGating(
 			if(dphase < -halfPeriod)
 				dphase += period;
 
-			total_error += labs(dphase);
+			total_error += i64abs(dphase);
 
 			//Find frequency error
 			int64_t uiLen = (tnext - tlast);
@@ -458,17 +460,17 @@ void ClockRecoveryFilter::InnerLoopWithNoGating(
 			if(uiLen > glitchCutoff)		//Sanity check: no correction if we have a glitch
 			{
 				int64_t numUIs = round(uiLen * initialFrequency);
-				uiLen /= numUIs;
-				dperiod = period - uiLen;
+				if(numUIs != 0)	//divide by zero check needed in some cases
+				{
+					uiLen /= numUIs;
+					dperiod = period - uiLen;
+				}
 			}
 
 			if(tlast != 0)
 			{
 				//Frequency error term
 				period -= dperiod * 0.006;
-
-				//Frequency drift term (delta from refclk)
-				//period -= (period - initialPeriod) * 0.0001;
 
 				//Phase error term
 				period -= dphase * 0.002;
@@ -510,7 +512,7 @@ void ClockRecoveryFilter::InnerLoopWithNoGating(
 		}
 
 		//Add the sample (90 deg phase offset from the internal NCO)
-		cap.m_offsets.push_back(edgepos + period/2);
+		cap.m_offsets.push_back(edgepos + center);
 	}
 
 	total_error /= edges.size();
@@ -552,3 +554,9 @@ void ClockRecoveryFilter::FillSquarewaveAVX2(SparseDigitalWaveform& cap)
 	}
 }
 #endif /* __x86_64__ */
+
+Filter::DataLocation ClockRecoveryFilter::GetInputLocation()
+{
+	//We explicitly manage our input memory and don't care where it is when Refresh() is called
+	return LOC_DONTCARE;
+}

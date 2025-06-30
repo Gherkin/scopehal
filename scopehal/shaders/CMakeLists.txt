@@ -33,8 +33,11 @@ add_compute_shaders(
 		Convert8BitSamplesWithClipDetection.glsl
 		Convert16BitSamples.glsl
 		DeEmbedFilter.glsl
+		DegradeSerialData.glsl
 		FindZeroCrossings.glsl
 		Gather.glsl
+		NoisySine.glsl
+		NoisySineSum.glsl
 		PreGather.glsl
 		RectangularWindow.glsl
 		ReductionSum.glsl
