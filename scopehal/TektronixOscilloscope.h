@@ -395,6 +395,7 @@ protected:
 	void PullWindowTrigger();
 	void PushWindowTrigger(WindowTrigger* trig);
 
+	float ReadTriggerLevelMDO4(OscilloscopeChannel* chan);
 	float ReadTriggerLevelMSO56(OscilloscopeChannel* chan);
 	void SetTriggerLevelMSO56(Trigger* trig);
 
