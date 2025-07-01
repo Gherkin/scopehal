@@ -408,6 +408,23 @@ void TektronixOscilloscope::DetectProbes()
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			for(size_t i=0; i<m_analogChannelCount; i++)
+			{
+				string id = TrimQuotes(m_transport->SendCommandQueuedWithReply(
+					GetOscilloscopeChannel(i)->GetHwname() + ":PROBE:ID:TYP?"));
+
+				lock_guard<recursive_mutex> lock(m_cacheMutex);
+				m_probeNames[i] = "ANALOG";
+
+				if(id == "TPP1000")
+					m_probeTypes[i] = PROBE_TYPE_ANALOG_250K;
+				else if(id.find("TCP") == 0)
+					m_probeTypes[i] = PROBE_TYPE_ANALOG_CURRENT;
+				else
+					m_probeTypes[i] = PROBE_TYPE_ANALOG;
+			}
+			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 
@@ -1183,6 +1200,9 @@ void TektronixOscilloscope::SetChannelVoltageRange(size_t i, size_t stream, floa
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			m_transport->SendCommandQueued(GetOscilloscopeChannel(i)->GetHwname() + ":SCA " + to_string(range/10));		
+			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			if(IsSpectrum(i))
@@ -1356,6 +1376,9 @@ void TektronixOscilloscope::SetChannelDisplayName(size_t i, string name)
 
 		switch(m_family)
 		{
+			case FAMILY_MDO4:
+				m_transport->SendCommandQueued(chan->GetHwname() + ":LAB \"" + name + "\"");
+				break;
 			//What a shocker!
 			//Completely orthogonal design for analog and digital, and it even handles empty strings well!
 			case FAMILY_MSO5:
@@ -1391,7 +1414,13 @@ float TektronixOscilloscope::GetChannelOffset(size_t i, size_t stream)
 	{
 		switch(m_family)
 		{
-			case FAMILY_MDO4:
+			case FAMILY_MDO4: 
+				{
+					offset = -stof(m_transport->SendCommandQueuedWithReply(GetOscilloscopeChannel(i)->GetHwname() + ":OFFS?"));
+					double pos = -stof(m_transport->SendCommandQueuedWithReply(GetOscilloscopeChannel(i)->GetHwname() + ":POS?")) / 10;
+					offset = offset + pos;
+					break;
+				}
 			case FAMILY_MSO5:
 			case FAMILY_MSO6:
 				if(IsSpectrum(i))
@@ -1435,6 +1464,36 @@ void TektronixOscilloscope::SetChannelOffset(size_t i, size_t stream, float offs
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			{	
+				float maxoffs = 0;
+				float divsize = GetChannelVoltageRange(i, stream) / 10;
+				if(divsize <= 0.05)
+					maxoffs = 1;
+				else if(divsize < 0.1)
+					maxoffs = 0.5;
+				else if(divsize <= 0.5)
+					maxoffs = 10;
+				else if(divsize < 1)
+					maxoffs = 5;
+				else if(divsize <= 5)
+					maxoffs = 100;
+				else if(divsize <= 10)
+					maxoffs = 50;
+				
+				LogDebug("tot offset: %10.8f\n", offset);
+				LogDebug("max offset: %4.1f\n", maxoffs);
+				if((offset < 0 && offset > -maxoffs) || (offset >=0 && offset < maxoffs))
+					m_transport->SendCommandQueued(GetOscilloscopeChannel(i)->GetHwname() + ":OFFS " + to_string(-offset));
+				else {
+					double rest = offset - maxoffs;
+					LogDebug("rest: %4.1f\n", rest);
+					m_transport->SendCommandQueued(GetOscilloscopeChannel(i)->GetHwname() + ":OFFS " + to_string(-maxoffs));
+					m_transport->SendCommandQueued(GetOscilloscopeChannel(i)->GetHwname() + ":POS " + to_string(-rest));
+				}
+				break;
+			}			
+
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			if(IsSpectrum(i))
@@ -1896,7 +1955,11 @@ bool TektronixOscilloscope::AcquireDataMSO56(map<int, vector<WaveformBase*> >& p
 			if (!ReadPreamble(preamble_str, preamble))
 				continue; // retry
 
+			LogDebug("xincrement: %18.15f\n", preamble.xincrement);
+	
 			timebase = preamble.xincrement * FS_PER_SECOND;	//scope gives sec, not fs
+			LogDebug("timebase: %lld\n", timebase);
+			preamble.yoff = -preamble.yoff * preamble.ymult + preamble.yzero;
 			m_channelOffsets[i] = -preamble.yoff;
 
 			//LogDebug("Channel %zu (%s)\n", i, GetOscilloscopeChannel(i)->GetHwname().c_str());
@@ -2576,6 +2639,7 @@ void TektronixOscilloscope::SetTriggerOffset(int64_t offset)
 {
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 		{
@@ -2791,6 +2855,21 @@ void TektronixOscilloscope::PullTrigger()
 
 	@return	The current trigger level, in volts
  */
+float TektronixOscilloscope::ReadTriggerLevelMDO4(OscilloscopeChannel* chan)
+{
+	string reply;
+
+	if(chan == m_extTrigChannel)
+		reply = m_transport->SendCommandQueuedWithReply("TRIG:A:LEV:AUX?", false);
+	else
+		reply = m_transport->SendCommandQueuedWithReply(string("TRIG:A:LEV:") + chan->GetHwname() + "?", false);
+
+	size_t off = reply.find(";");
+	if(off != string::npos)
+		reply = reply.substr(0, off);
+
+	return stof(reply);
+}
 float TektronixOscilloscope::ReadTriggerLevelMSO56(OscilloscopeChannel* chan)
 {
 	string reply;
@@ -2826,6 +2905,26 @@ void TektronixOscilloscope::PullEdgeTrigger()
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			{
+				//Source channel
+				auto reply = m_transport->SendCommandQueuedWithReply("TRIG:A:EDGE:SOU?");
+				et->SetInput(0, StreamDescriptor(GetOscilloscopeChannelByHwName(reply), 0), true);
+
+				//Trigger level
+				et->SetLevel(ReadTriggerLevelMDO4(GetOscilloscopeChannelByHwName(reply)));
+
+				//Edge slope
+				reply = m_transport->SendCommandQueuedWithReply("TRIG:A:EDGE:SLO?");
+				if(reply == "RIS")
+					et->SetType(EdgeTrigger::EDGE_RISING);
+				else if(reply == "FALL")
+					et->SetType(EdgeTrigger::EDGE_FALLING);
+				else if(reply == "EIT")
+					et->SetType(EdgeTrigger::EDGE_ANY);
+			}
+			break;
+
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
@@ -3273,6 +3372,7 @@ void TektronixOscilloscope::PushEdgeTrigger(EdgeTrigger* trig)
 {
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
