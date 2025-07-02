@@ -295,7 +295,7 @@ void DPAuxChannelDecoder::Refresh()
 
 				if(!good)
 					LogTrace("Edge was in the wrong place (delta=%" PRId64 "), skipping it and attempting resync\n", delta);
-				else if(frame_state == FRAME_PAYLOAD)
+				else if(frame_state == FRAME_COMMAND || frame_state == FRAME_REPLY)
 					LogTrace("Got valid sync pattern\n");
 				else if(frame_state == FRAME_END_1)
 				{
