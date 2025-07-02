@@ -2816,6 +2816,36 @@ void TektronixOscilloscope::PullTrigger()
 	switch(m_family)
 	{
 		case FAMILY_MDO4:
+			{
+				string reply = m_transport->SendCommandQueuedWithReply("TRIG:A:TYP?");
+
+				if(reply == "EDG")
+					PullEdgeTrigger();
+				else if(reply == "PULS") {
+					reply = m_transport->SendCommandQueuedWithReply("TRIG:A:PUL:CLA?");
+					if(reply == "WID")
+						PullPulseWidthTrigger();
+					else if(reply == "RUN")
+						PullRuntTrigger();
+					else if(reply == "TRAN")
+						PullSlewRateTrigger();
+					else if(reply == "TIMEO")
+						PullDropoutTrigger();
+					else
+					{
+						LogWarning("Unknown pulse trigger type %s\n", reply.c_str());
+						delete m_trigger;
+						m_trigger = NULL;
+					}
+				}
+				else
+				{
+					LogWarning("Unknown trigger type %s\n", reply.c_str());
+					delete m_trigger;
+					m_trigger = NULL;
+				}
+			}
+			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
@@ -3017,6 +3047,7 @@ void TektronixOscilloscope::PullPulseWidthTrigger()
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
@@ -3420,6 +3451,56 @@ void TektronixOscilloscope::PushPulseWidthTrigger(PulseWidthTrigger* trig)
 {
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			{
+				m_transport->SendCommandQueued("TRIG:A:TYP WID");
+				m_transport->SendCommandQueued(string("TRIG:A:PULSEW:SOU ") + trig->GetInput(0).m_channel->GetHwname());
+
+				m_transport->SendCommandQueued(
+					string("TRIG:A:LEV:") + trig->GetInput(0).m_channel->GetHwname() + " " + to_string_sci(trig->GetLevel()));
+
+				m_transport->SendCommandQueued(string("TRIG:A:PULSEW:HIGHL ") +
+					to_string_sci(trig->GetUpperBound() * SECONDS_PER_FS));
+				m_transport->SendCommandQueued(string("TRIG:A:PULSEW:LOWL ") +
+					to_string_sci(trig->GetLowerBound() * SECONDS_PER_FS));
+
+				if(trig->GetType() == EdgeTrigger::EDGE_RISING)
+					m_transport->SendCommandQueued("TRIG:A:PULSEW:POL POS");
+				else
+					m_transport->SendCommandQueued("TRIG:A:PULSEW:POL NEG");
+
+				switch(trig->GetCondition())
+				{
+					case Trigger::CONDITION_LESS:
+						m_transport->SendCommandQueued("TRIG:A:PULSEW:WHE LESS");
+						break;
+
+					case Trigger::CONDITION_GREATER:
+						m_transport->SendCommandQueued("TRIG:A:PULSEW:WHE MORE");
+						break;
+
+					case Trigger::CONDITION_EQUAL:
+						m_transport->SendCommandQueued("TRIG:A:PULSEW:WHE EQ");
+						break;
+
+					case Trigger::CONDITION_NOT_EQUAL:
+						m_transport->SendCommandQueued("TRIG:A:PULSEW:WHE UNEQ");
+						break;
+
+					case Trigger::CONDITION_BETWEEN:
+						m_transport->SendCommandQueued("TRIG:A:PULSEW:WHE WIT");
+						break;
+
+					case Trigger::CONDITION_NOT_BETWEEN:
+						m_transport->SendCommandQueued("TRIG:A:PULSEW:WHE OUT");
+						break;
+
+					default:
+						break;
+				}
+			}
+			break;
+
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
