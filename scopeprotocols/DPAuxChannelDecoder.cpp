@@ -268,14 +268,6 @@ void DPAuxChannelDecoder::Refresh()
 							}
 							break;
 
-						case FRAME_PAYLOAD:
-							if(current_state)
-							{
-								good = true;
-								frame_state = FRAME_END_1;
-							}
-							break;
-
 						case FRAME_END_1:
 							if(!current_state)
 							{
@@ -285,6 +277,11 @@ void DPAuxChannelDecoder::Refresh()
 							break;
 
 						default:
+							if(current_state)
+							{
+								good = true;
+								frame_state = FRAME_END_1;
+							}
 							break;
 					}
 				}
