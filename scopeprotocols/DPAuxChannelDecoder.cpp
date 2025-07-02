@@ -445,7 +445,7 @@ void DPAuxChannelDecoder::Refresh()
 					case FRAME_REPLY:
 						last_was_i2c_request = false;
 
-						if(last_was_i2c)
+						if((current_byte & 0x3) == 0)
 							cap->m_samples.push_back(DPAuxSymbol(DPAuxSymbol::TYPE_I2C_REPLY, current_byte));
 						else
 							cap->m_samples.push_back(DPAuxSymbol(DPAuxSymbol::TYPE_AUX_REPLY, current_byte));
