@@ -80,6 +80,7 @@
 #include "SiglentPowerSupply.h"
 #include "RidenPowerSupply.h"
 #include "KuaiquPowerSupply.h"
+#include "TTIQL564PPowerSupply.h"
 
 #include "SiglentLoad.h"
 
@@ -280,6 +281,7 @@ void DriverStaticInit()
 	AddPowerSupplyDriverClass(AlientekPowerSupply);
 	AddPowerSupplyDriverClass(RidenPowerSupply);
 	AddPowerSupplyDriverClass(KuaiquPowerSupply);
+	AddPowerSupplyDriverClass(TTIQL564PPowerSupply);
 
 	AddRFSignalGeneratorDriverClass(SiglentVectorSignalGenerator);
 

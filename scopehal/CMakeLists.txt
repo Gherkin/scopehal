@@ -193,6 +193,7 @@ set(SCOPEHAL_SOURCES
 	TektronixHSIOscilloscope.cpp
 	ThunderScopeOscilloscope.cpp
 	TinySA.cpp
+	TTIQL564PPowerSupply.cpp
 	UHDBridgeSDR.cpp
 	HP662xAPowerSupply.cpp
 	RigolDP8xxPowerSupply.cpp
