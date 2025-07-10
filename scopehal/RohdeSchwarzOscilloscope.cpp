@@ -51,9 +51,11 @@ RohdeSchwarzOscilloscope::RohdeSchwarzOscilloscope(SCPITransport* transport)
 	, SCPIInstrument(transport)
 	, m_triggerArmed(false)
 	, m_triggerOneShot(false)
+	, m_triggerOffsetValid(false)	
 {
 	int nchans = 0;
 
+	LogDebug("model: %s\n", m_model.c_str());
 	if(m_model.find("RTE") == 0)
 	{
 		//RTE scopes don't give a full model name over IDN
@@ -64,6 +66,13 @@ RohdeSchwarzOscilloscope::RohdeSchwarzOscilloscope(SCPITransport* transport)
 	{
 		m_series = SERIES_RTM;
 
+		//Last digit of the model number is the number of channels
+		int model_number = atoi(m_model.c_str() + 3);	//FIXME: are all series IDs 3 chars e.g. "RTM"?
+		nchans = model_number % 10;
+	}
+	else if(m_model.find("RTB") == 0)
+	{
+		m_series = SERIES_RTB;
 		//Last digit of the model number is the number of channels
 		int model_number = atoi(m_model.c_str() + 3);	//FIXME: are all series IDs 3 chars e.g. "RTM"?
 		nchans = model_number % 10;
@@ -119,7 +128,7 @@ RohdeSchwarzOscilloscope::RohdeSchwarzOscilloscope(SCPITransport* transport)
 	m_extTrigChannel = new OscilloscopeChannel(
 		this,
 		"EX",
-		"",
+		"#555555",
 		Unit(Unit::UNIT_FS),
 		Unit(Unit::UNIT_VOLTS),
 		Stream::STREAM_TYPE_TRIGGER,
@@ -178,6 +187,40 @@ RohdeSchwarzOscilloscope::RohdeSchwarzOscilloscope(SCPITransport* transport)
 		else if(sopt == "B1") {
 			// TODO add digital channels
 			LogDebug("(Mixed signal, 16 channels)\n");
+			m_digitalChannelBase = m_channels.size();
+			m_digitalChannelCount = 0;
+			for(size_t i=0; i<8; i++)
+			{
+				//TODO: fix color
+				auto chan = new OscilloscopeChannel(
+					this,
+					"DIG" + to_string(i),
+					"#159DEE",
+					Unit(Unit::UNIT_FS),
+					Unit(Unit::UNIT_COUNTS),
+					Stream::STREAM_TYPE_DIGITAL,
+					m_digitalChannelBase + i);
+
+				m_transport->SendCommand("DIG" + to_string(i) + ":DATA:POIN MAX");
+				m_channels.push_back(chan);
+				m_digitalChannelCount++;
+			}
+			for(size_t i=8; i<16; i++)
+			{
+				//TODO: fix color
+				auto chan = new OscilloscopeChannel(
+					this,
+					"DIG" + to_string(i),
+					"#159DEE",
+					Unit(Unit::UNIT_FS),
+					Unit(Unit::UNIT_COUNTS),
+					Stream::STREAM_TYPE_DIGITAL,
+					m_digitalChannelBase + i);
+
+				m_transport->SendCommand("DIG" + to_string(i) + ":DATA:POIN MAX");
+				m_channels.push_back(chan);
+				m_digitalChannelCount++;
+			}
 		}
 		else if(sopt == "K31")
 			LogDebug("(Power analysis)\n");
@@ -234,6 +277,10 @@ void RohdeSchwarzOscilloscope::FlushConfigCache()
 	m_channelsEnabled.clear();
 	m_channelCouplings.clear();
 	m_channelAttenuations.clear();
+	
+	m_triggerOffsetValid = false;
+	m_sampleDepthValid = false;
+	m_sampleRateValid = false;
 
 	delete m_trigger;
 	m_trigger = NULL;
@@ -245,9 +292,6 @@ bool RohdeSchwarzOscilloscope::IsChannelEnabled(size_t i)
 	if(i == m_extTrigChannel->GetIndex())
 		return false;
 
-	//TODO: handle digital channels, for now just claim they're off
-	if(i >= m_analogChannelCount)
-		return false;
 
 	lock_guard<recursive_mutex> lock(m_cacheMutex);
 
@@ -256,7 +300,41 @@ bool RohdeSchwarzOscilloscope::IsChannelEnabled(size_t i)
 
 	lock_guard<recursive_mutex> lock2(m_mutex);
 
-	m_transport->SendCommand(m_channels[i]->GetHwname() + ":STAT?");
+	// Handle digital channels
+	if(i >= m_digitalChannelBase && i < m_digitalChannelBase + m_digitalChannelCount)
+	{
+		string reply;
+		if(i < m_digitalChannelBase + 8) {
+			m_transport->SendCommand("LOG1:PROB?");
+			reply = m_transport->ReadReply();
+		}
+		else {
+			m_transport->SendCommand("LOG2:PROB?");
+			reply = m_transport->ReadReply();
+		}		
+		
+		LogDebug("reply: %s\n", reply.c_str());
+		if(reply == "0") {
+			m_channelsEnabled[i] = false;
+			return false;
+		}
+		
+		m_transport->SendCommand("DIG" + to_string(i - m_digitalChannelBase) + ":PROB:ENABLE?");
+		reply = m_transport->ReadReply();
+		if(reply == "0" || reply == "OFF")
+		{
+			m_channelsEnabled[i] = false;
+			return false;
+		}
+	}
+
+	if(i < m_analogChannelCount)
+		m_transport->SendCommand(m_channels[i]->GetHwname() + ":STAT?");
+	else if(i >= m_digitalChannelBase && i < m_digitalChannelBase + m_digitalChannelCount)
+		m_transport->SendCommand(m_channels[i]->GetHwname() + ":DISP?");
+	else
+		return false;
+
 	string reply = m_transport->ReadReply();
 	if(reply == "OFF" || reply == "0")
 	{
@@ -272,8 +350,19 @@ bool RohdeSchwarzOscilloscope::IsChannelEnabled(size_t i)
 
 void RohdeSchwarzOscilloscope::EnableChannel(size_t i)
 {
+	LogDebug("RohdeSchwarzOscilloscope::EnableChannel(%zu)\n", i);
 	lock_guard<recursive_mutex> lock(m_mutex);
-	m_transport->SendCommand(m_channels[i]->GetHwname() + ":STAT ON");
+	if(i < m_analogChannelCount)
+		m_transport->SendCommand(m_channels[i]->GetHwname() + ":STAT ON");
+	else if(i >= m_digitalChannelBase && i < m_digitalChannelBase + m_digitalChannelCount)
+	{
+		if(i < m_digitalChannelBase + 8)
+			m_transport->SendCommand("LOG1:PROB:STAT ON");
+		else
+			m_transport->SendCommand("LOG2:PROB:STAT ON");
+
+		m_transport->SendCommand(m_channels[i]->GetHwname() + ":DISP ON");
+	}
 
 	lock_guard<recursive_mutex> lock2(m_cacheMutex);
 	m_channelsEnabled[i] = true;
@@ -281,8 +370,45 @@ void RohdeSchwarzOscilloscope::EnableChannel(size_t i)
 
 void RohdeSchwarzOscilloscope::DisableChannel(size_t i)
 {
+	LogDebug("RohdeSchwarzOscilloscope::DisableChannel(%zu)\n", i);
 	lock_guard<recursive_mutex> lock(m_mutex);
-	m_transport->SendCommand(m_channels[i]->GetHwname() + ":STAT OFF");
+	if(i < m_analogChannelCount)
+		m_transport->SendCommand(m_channels[i]->GetHwname() + ":STAT OFF");
+	else if(i >= m_digitalChannelBase && i < m_digitalChannelBase + m_digitalChannelCount)
+	{
+		m_transport->SendCommand(m_channels[i]->GetHwname() + ":DISP OFF");
+
+		boolean all_off = true;
+		if(i < m_digitalChannelBase + 8)
+		{
+			for(size_t j = m_digitalChannelBase; j < m_digitalChannelBase + 8; j++)
+			{
+				if(IsChannelEnabled(j))
+				{
+					all_off = false;
+					break;
+				}
+			}
+		}
+		else
+		{
+			for(size_t j = m_digitalChannelBase + 8; j < m_digitalChannelBase + m_digitalChannelCount; j++)
+			{
+				if(IsChannelEnabled(j))
+				{
+					all_off = false;
+					break;
+				}
+			}
+		}
+		if(all_off)
+			m_transport->SendCommand("LOG1:PROB:STAT OFF");
+	}
+	else
+	{
+		LogError("Invalid channel index %zu\n", i);
+		return;
+	}
 
 	lock_guard<recursive_mutex> lock2(m_cacheMutex);
 	m_channelsEnabled[i] = false;
@@ -300,6 +426,10 @@ vector<OscilloscopeChannel::CouplingType> RohdeSchwarzOscilloscope::GetAvailable
 
 OscilloscopeChannel::CouplingType RohdeSchwarzOscilloscope::GetChannelCoupling(size_t i)
 {
+	if(i >= m_digitalChannelBase) {
+		return OscilloscopeChannel::COUPLE_DC_50;
+	}
+	LogDebug("RohdeSchwarzOscilloscope::GetChannelCoupling(%zu)\n", i);
 	{
 		lock_guard<recursive_mutex> lock(m_cacheMutex);
 		if(m_channelCouplings.find(i) != m_channelCouplings.end())
@@ -366,6 +496,10 @@ void RohdeSchwarzOscilloscope::SetChannelCoupling(size_t i, OscilloscopeChannel:
 
 double RohdeSchwarzOscilloscope::GetChannelAttenuation(size_t i)
 {
+	if(i >= m_digitalChannelBase) {
+		return 1;
+	}
+	LogDebug("RohdeSchwarzOscilloscope::GetChannelAttenuation(%zu)\n", i);
 	{
 		lock_guard<recursive_mutex> lock(m_cacheMutex);
 		if(m_channelAttenuations.find(i) != m_channelAttenuations.end())
@@ -419,6 +553,10 @@ float RohdeSchwarzOscilloscope::GetChannelVoltageRange(size_t i, size_t /*stream
 			return m_channelVoltageRanges[i];
 	}
 
+	//If not analog, return a placeholder value
+	if(i >= m_analogChannelCount)
+		return 1;
+
 	lock_guard<recursive_mutex> lock2(m_mutex);
 
 	m_transport->SendCommand(m_channels[i]->GetHwname() + ":RANGE?");
@@ -453,6 +591,10 @@ OscilloscopeChannel* RohdeSchwarzOscilloscope::GetExternalTrigger()
 
 float RohdeSchwarzOscilloscope::GetChannelOffset(size_t i, size_t /*stream*/)
 {
+	if(i >= m_digitalChannelBase) {
+		return 0;
+	}
+	//LogDebug("RohdeSchwarzOscilloscope::GetChannelOffset(%zu)\n", i);
 	{
 		lock_guard<recursive_mutex> lock(m_cacheMutex);
 
@@ -488,11 +630,29 @@ void RohdeSchwarzOscilloscope::SetChannelOffset(size_t i, size_t /*stream*/, flo
 
 Oscilloscope::TriggerMode RohdeSchwarzOscilloscope::PollTrigger()
 {
+	if(!m_triggerArmed)
+		return TRIGGER_MODE_STOP;
+	
 	lock_guard<recursive_mutex> lock(m_mutex);
 
 	m_transport->SendCommand("ACQ:STAT?");
 	string stat = m_transport->ReadReply();
 
+	if(m_series == SERIES_RTB) 
+	{
+		// RTB for some reason responds STOP on single trigger when running
+		if(stat == "RUN")
+			return TRIGGER_MODE_RUN;
+		else if(stat == "STOP" && m_triggerArmed)
+			return TRIGGER_MODE_RUN;
+		else if(stat == "STOP" || stat == "BRE")
+			return TRIGGER_MODE_STOP;
+		else 
+		{
+			m_triggerArmed = false;
+			return TRIGGER_MODE_TRIGGERED;
+		}
+	}
 	if(stat == "RUN")
 		return TRIGGER_MODE_RUN;
 	else if( (stat == "STOP") || (stat == "BRE") )
@@ -510,12 +670,13 @@ bool RohdeSchwarzOscilloscope::AcquireData()
 
 	lock_guard<recursive_mutex> lock(m_mutex);
 	LogIndenter li;
+	std::this_thread::sleep_for(std::chrono::microseconds(100000));
 
 	double xstart;
 	double xstop;
 	size_t length;
 	int ignored;
-	map<int, vector<UniformAnalogWaveform*> > pending_waveforms;
+	map<int, vector<WaveformBase*> > pending_waveforms;
 	bool any_data = false;
 	for(size_t i=0; i<m_analogChannelCount; i++)
 	{
@@ -523,11 +684,13 @@ bool RohdeSchwarzOscilloscope::AcquireData()
 			continue;
 
 		//This is basically the same function as a LeCroy WAVEDESC, but much less detailed
+		LogDebug("Header query for channel %zu\n", i);
 		m_transport->SendCommand(m_channels[i]->GetHwname() + ":DATA:HEAD?");
 		string reply = m_transport->ReadReply();
 		int rc = sscanf(reply.c_str(), "%lf,%lf,%zu,%d", &xstart, &xstop, &length, &ignored);
 		if (rc != 4 || length == 0) {
 			/* No data - Skip query the scope and move on */
+			LogDebug("No data for channel %zu\n", i);
 			pending_waveforms[i].push_back(NULL);
 			continue;
 		}
@@ -549,6 +712,7 @@ bool RohdeSchwarzOscilloscope::AcquireData()
 		cap->m_startFemtoseconds = (t - floor(t)) * FS_PER_SECOND;
 
 		//Ask for the data
+		//TODO: this should be handled in pieces, RTB gives timeout
 		m_transport->SendCommand(m_channels[i]->GetHwname() + ":DATA?");
 
 		//Read and discard the length header
@@ -574,6 +738,127 @@ bool RohdeSchwarzOscilloscope::AcquireData()
 		//Clean up
 		delete[] temp_buf;
 	}
+	//Handle digital
+	
+	bool didAcquireAnyDigitalChannels = false;
+
+	LogDebug("Acquiring digital channels\n");
+	LogDebug("m_digitalChannelBase: %zu, m_digitalChannelCount: %zu\n", m_digitalChannelBase, m_digitalChannelCount);	
+	for(size_t i=m_digitalChannelBase; i<(m_digitalChannelBase + m_digitalChannelCount); i++)
+	{
+		LogDebug("Acquiring digital channel %zu\n", i);
+		if(!IsChannelEnabled(i))
+			continue;
+
+		m_transport->SendCommand(m_channels[i]->GetHwname() + ":DATA:HEAD?");
+		string reply = m_transport->ReadReply();
+		int rc = sscanf(reply.c_str(), "%lf,%lf,%zu,%d", &xstart, &xstop, &length, &ignored);
+		if (rc != 4 || length == 0) {
+			LogDebug("No data for channel %zu\n", i);
+			pending_waveforms[i].push_back(NULL);
+			continue;
+		}
+		any_data = true;
+		
+		if(!didAcquireAnyDigitalChannels)
+		{
+			while (m_transport->SendCommandImmediateWithReply("FORM?") != "ASC,0")
+			{
+				m_transport->SendCommandImmediate("FORM ASC; *WAI"); //Only possible to get data out in ASCII format
+				std::this_thread::sleep_for(std::chrono::microseconds(1000000));
+			}
+			didAcquireAnyDigitalChannels = true;
+		}
+
+		double capture_len_sec = xstop - xstart;
+		double sec_per_sample = capture_len_sec / length;
+		int64_t fs_per_sample = round(sec_per_sample * FS_PER_SECOND);
+
+		auto cap = new SparseDigitalWaveform;
+		cap->m_timescale = fs_per_sample;
+		cap->m_triggerPhase = 0;
+		cap->m_startTimestamp = time(NULL);
+		double t = GetTime();
+		cap->m_startFemtoseconds = (t - floor(t)) * FS_PER_SECOND + GetTriggerOffset();
+
+		cap->Resize(length);
+		cap->PrepareForCpuAccess();
+
+		size_t expected_bytes = length * 2; // Commas between items
+		// Digital channels do not appear to support selecting a subset, so no 'chunking'
+
+		LogDebug(" - Begin transfer of %zu bytes (*2)\n", length);
+
+		// Since it's ascii the scope just sends it as a SCPI 'line' without the size block
+		m_transport->SendCommandImmediate(m_channels[i]->GetHwname() + ":DATA?");
+		unsigned char* samples = new unsigned char[expected_bytes];
+		size_t read_bytes = m_transport->ReadRawData(expected_bytes, samples);
+
+		LogDebug(" - Read %zu bytes, expected %zu bytes\n", read_bytes, expected_bytes);
+		if (read_bytes != expected_bytes)
+		{
+			LogWarning("Unexpected number of bytes back; aborting acquisiton\n");
+			std::this_thread::sleep_for(std::chrono::microseconds(100000));
+			m_transport->FlushRXBuffer();
+
+			delete cap;
+
+			for (auto* c : pending_waveforms[i])
+			{
+				delete c;
+			}
+
+			delete[] samples;
+
+			return false;
+		}
+
+		bool last = samples[0] == '1';
+
+		cap->m_offsets[0] = 0;
+		cap->m_durations[0] = 1;
+		cap->m_samples[0] = last;
+
+		size_t k = 0;
+
+		for(size_t m=1; m<length; m++)
+		{
+			bool sample = samples[m*2] == '1';
+
+			//Deduplicate consecutive samples with same value
+			//FIXME: temporary workaround for rendering bugs
+			//if(last == sample)
+			if( (last == sample) && ((m+5) < length) && (m > 5))
+				cap->m_durations[k] ++;
+
+			//Nope, it toggled - store the new value
+			else
+			{
+				k++;
+				cap->m_offsets[k] = m;
+				cap->m_durations[k] = 1;
+				cap->m_samples[k] = sample;
+				last = sample;
+			}
+		}
+
+		//Free space reclaimed by deduplication
+		cap->Resize(k);
+		cap->m_offsets.shrink_to_fit();
+		cap->m_durations.shrink_to_fit();
+		cap->m_samples.shrink_to_fit();
+
+		cap->MarkSamplesModifiedFromCpu();
+		cap->MarkTimestampsModifiedFromCpu();
+
+		delete[] samples;
+
+		//Done, update the data
+		pending_waveforms[i].push_back(cap);
+	}
+	if (didAcquireAnyDigitalChannels)
+		m_transport->SendCommandImmediate("FORMat:DATA REAL,32"); //Return to f32
+
 	if (!any_data)
 	{
 		LogDebug("Skip update, no data from scope\n");
@@ -592,7 +877,7 @@ bool RohdeSchwarzOscilloscope::AcquireData()
 	for(size_t i=0; i<num_pending; i++)
 	{
 		SequenceSet s;
-		for(size_t j=0; j<m_analogChannelCount; j++)
+		for(size_t j=0; j<m_channels.size(); j++)
 		{
 			if(IsChannelEnabled(j))
 				s[GetOscilloscopeChannel(j)] = pending_waveforms[j][i];
@@ -640,7 +925,8 @@ void RohdeSchwarzOscilloscope::Stop()
 
 void RohdeSchwarzOscilloscope::ForceTrigger()
 {
-	LogError("RohdeSchwarzOscilloscope::ForceTrigger not implemented\n");
+	m_triggerArmed = true;
+	m_transport->SendCommand("*TRG");
 }
 
 bool RohdeSchwarzOscilloscope::IsTriggerArmed()
@@ -668,7 +954,7 @@ vector<uint64_t> RohdeSchwarzOscilloscope::GetSampleRatesInterleaved()
 
 set<Oscilloscope::InterleaveConflict> RohdeSchwarzOscilloscope::GetInterleaveConflicts()
 {
-	LogWarning("RohdeSchwarzOscilloscope::GetInterleaveConflicts unimplemented\n");
+//	LogWarning("RohdeSchwarzOscilloscope::GetInterleaveConflicts unimplemented\n");
 
 	//FIXME
 	set<Oscilloscope::InterleaveConflict> ret;
@@ -677,53 +963,110 @@ set<Oscilloscope::InterleaveConflict> RohdeSchwarzOscilloscope::GetInterleaveCon
 
 vector<uint64_t> RohdeSchwarzOscilloscope::GetSampleDepthsNonInterleaved()
 {
-	LogWarning("RohdeSchwarzOscilloscope::GetSampleDepthsNonInterleaved unimplemented\n");
-
-	//FIXME
 	vector<uint64_t> ret;
+
+	const int64_t k = 1000;
+	const int64_t m = k * k;
+
+	switch(m_series)
+	{
+		case SERIES_RTB:
+			{
+				ret.push_back(10 * k);
+				ret.push_back(20 * k);
+				ret.push_back(50 * k);
+				ret.push_back(100 * k);
+				ret.push_back(200 * k);
+				ret.push_back(500 * k);
+				ret.push_back(1 * m);
+				ret.push_back(2 * m);
+				ret.push_back(5 * m);
+				ret.push_back(10 * m);
+				ret.push_back(20 * m);
+			}
+			break;
+		default:
+		    break;
+	}
+	
 	return ret;
 }
 
 vector<uint64_t> RohdeSchwarzOscilloscope::GetSampleDepthsInterleaved()
 {
-	LogWarning("RohdeSchwarzOscilloscope::GetSampleDepthsInterleaved unimplemented\n");
-
-	//FIXME
-	vector<uint64_t> ret;
-	return ret;
+	// Atleast RTB has no interleaving
+	return GetSampleDepthsNonInterleaved();
 }
 
 uint64_t RohdeSchwarzOscilloscope::GetSampleRate()
 {
-	//FIXME
-	return 1;
+	if(m_sampleRateValid)
+		return m_sampleRate;
+	
+	m_transport->SendCommand("ACQ:SRAT?");
+	//stoull seems to not handle scientific notation
+	m_sampleRate = stod(m_transport->ReadReply());
+	
+	m_sampleRateValid = true;
+	return m_sampleRate;
 }
 
 uint64_t RohdeSchwarzOscilloscope::GetSampleDepth()
 {
-	//FIXME
-	return 1;
+	if(m_sampleDepthValid)
+		return m_sampleDepth;
+
+	m_transport->SendCommand("ACQ:POIN?");
+	m_sampleDepth = stoull(m_transport->ReadReply());
+
+	m_sampleDepthValid = true;
+	return m_sampleDepth;
 }
 
-void RohdeSchwarzOscilloscope::SetSampleDepth(uint64_t /*depth*/)
+void RohdeSchwarzOscilloscope::SetSampleDepth(uint64_t depth)
 {
-	//FIXME
+	//Update the cache
+	{
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		m_sampleDepth = depth;
+		m_sampleDepthValid = true;
+	}
+	
+	m_transport->SendCommand("ACQ:POIN " + to_string(depth));
 }
 
 void RohdeSchwarzOscilloscope::SetSampleRate(uint64_t /*rate*/)
 {
+	switch(m_series)
+	{
+		case SERIES_RTB:
+			{
+				//RTB has no direct sample rate setting, must set time base
+				double rtb_rate = 1.0 
+				
+				
+			}
 	//FIXME
 }
 
-void RohdeSchwarzOscilloscope::SetTriggerOffset(int64_t /*offset*/)
+void RohdeSchwarzOscilloscope::SetTriggerOffset(int64_t offset)
 {
-	//FIXME
+	double offset_sec = offset * SECONDS_PER_FS;
+	m_transport->SendCommand("TIM:POS " + to_string(offset_sec));
 }
 
 int64_t RohdeSchwarzOscilloscope::GetTriggerOffset()
 {
-	//FIXME
-	return 0;
+	if(m_triggerOffsetValid)
+		return m_triggerOffset;
+
+	// TODO: works for RTB, check for rest
+	m_transport->SendCommand("TIM:POS?");
+	string reply = m_transport->ReadReply();
+	double offset_sec = stod(reply);
+	m_triggerOffset = round(offset_sec * FS_PER_SECOND);
+	m_triggerOffsetValid = true;
+	return m_triggerOffset;
 }
 
 bool RohdeSchwarzOscilloscope::IsInterleaving()
@@ -775,6 +1118,7 @@ void RohdeSchwarzOscilloscope::PullEdgeTrigger()
 
 	switch(m_series)
 	{
+		case SERIES_RTB:
 		case SERIES_RTM:
 			{
 				//Source

@@ -99,10 +99,11 @@ protected:
 	{
 		SERIES_RTE,
 		SERIES_RTM,
+		SERIES_RTB,
 		SERIES_UNKNOWN
 	} m_series;
 
-	//hardware analog channel count, independent of LA option etc
+		//hardware analog channel count, independent of LA option etc
 	unsigned int m_analogChannelCount;
 
 	//config cache
@@ -114,10 +115,35 @@ protected:
 
 	bool m_triggerArmed;
 	bool m_triggerOneShot;
+	
+	/// @brief True if m_sampleDepth is valid, false if out of sync
+	bool m_sampleDepthValid;
+
+	/// @brief Acquisition sample depth, in samples
+	uint64_t m_sampleDepth;
+
+	/// @brief True if m_sampleRate is valid, false if out of sync
+	bool m_sampleRateValid;
+
+	/// @brief Acquisition sample rate, in samples/sec
+	uint64_t m_sampleRate;
+
+	/// @brief True if m_triggerOffset is valid, false if out of sync
+	bool m_triggerOffsetValid;
+	
+	/// @brief Offset from start of waveform to trigger point
+	int64_t m_triggerOffset;
+	
 
 	void PullEdgeTrigger();
 	void PushEdgeTrigger(EdgeTrigger* trig);
 	void PushFloat(std::string path, float f);
+	
+	///@brief Starting index for digital channels
+	size_t m_digitalChannelBase;
+
+	///@brief Number of digital channels
+	size_t m_digitalChannelCount;
 
 public:
 	static std::string GetDriverNameInternal();
