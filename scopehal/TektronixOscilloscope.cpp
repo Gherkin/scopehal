@@ -149,6 +149,7 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 
 	//TODO: get colors for channels 5-8 on wide instruments
 	const char* colors_default[4] = { "#ffff00", "#32ff00", "#5578ff", "#ff0084" };	//yellow-green-violet-pink
+	const char* colors_mdo4[4] = { "#ffff00", "#00e7e7", "#a500a5", "#00a600" };	//yellow-cyan-purple-green
 	const char* colors_mso5[6] = { "#faf539", "#23cdda", "#ee435f",
 	                               "#90ce3b", "#fa9a32", "#2526bb" };	            //yellow-cyan-red-green-orange-blue
 	                                                                                //picked from a remoting screenshot,
@@ -161,6 +162,10 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 		string color = "#ffffff";
 		switch(m_family)
 		{
+			case FAMILY_MDO4:
+				color = colors_mdo4[i % 4];
+				break;
+
 			case FAMILY_MSO5:
 				color = colors_mso5[i % 6];
 				break;
@@ -651,7 +656,8 @@ void TektronixOscilloscope::EnableChannel(size_t i)
 	switch(m_family)
 	{
 		case FAMILY_MDO4:
-			m_transport->SendCommandQueued(string("SEL:") + GetOscilloscopeChannel(i)->GetHwname() + "ON");
+			LogTrace("Enabling channel %s\n", GetOscilloscopeChannel(i)->GetHwname().c_str());
+			m_transport->SendCommandQueued(string("SEL:") + GetOscilloscopeChannel(i)->GetHwname() + " ON");
 			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
@@ -730,7 +736,7 @@ void TektronixOscilloscope::DisableChannel(size_t i)
 	switch(m_family)
 	{
 		case FAMILY_MDO4:
-			m_transport->SendCommandQueued(string("SEL:") + GetOscilloscopeChannel(i)->GetHwname() + "OFF");
+			m_transport->SendCommandQueued(string("SEL:") + GetOscilloscopeChannel(i)->GetHwname() + " OFF");
 			break;
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
@@ -1530,18 +1536,25 @@ Oscilloscope::TriggerMode TektronixOscilloscope::PollTrigger()
 	m_transport->FlushCommandQueue();
 	string ter = m_transport->SendCommandImmediateWithReply("TRIG:STATE?");
 
-	if(ter == "SAV")
+	if(ter == "SAV" && m_triggerReady) // MDO4 atleast can reply SAV for a while after arming
 	{
+		m_triggerReady = false;
 		m_triggerArmed = false;
 		return TRIGGER_MODE_TRIGGERED;
 	}
+	
+	if(ter == "SAV")
+		return TRIGGER_MODE_WAIT;
+	m_triggerReady = true;
 
 	//Trigger is armed but not yet ready to go
-	if(ter == "ARM")
+	if(ter == "ARM") {
 		return TRIGGER_MODE_WAIT;
+	}
 
-	if(ter == "REA")
+	if(ter == "REA") {
 		return TRIGGER_MODE_RUN;
+	}
 
 	//TODO: AUTO, TRIGGER. For now consider that same as RUN
 	return TRIGGER_MODE_RUN;
@@ -1565,6 +1578,7 @@ bool TektronixOscilloscope::PeekTriggerArmed()
 
 bool TektronixOscilloscope::AcquireData()
 {
+	LogTrace("Acquiring data\n");
 	//LogDebug("Acquiring data\n");
 
 	map<int, vector<WaveformBase*> > pending_waveforms;
@@ -2334,6 +2348,7 @@ void TektronixOscilloscope::Start()
 	FlushChannelEnableStates();
 
 	m_transport->SendCommandQueued("ACQ:STATE ON");
+	m_triggerReady = false;
 	m_triggerArmed = true;
 	m_triggerOneShot = false;
 }
@@ -2344,13 +2359,16 @@ void TektronixOscilloscope::StartSingleTrigger()
 	lock_guard<recursive_mutex> lock2(m_cacheMutex);
 	FlushChannelEnableStates();
 
+	//m_transport->SendCommandQueued("ACQ:STOPA SEQ");
 	m_transport->SendCommandQueued("ACQ:STATE ON");
+	m_triggerReady = false;
 	m_triggerArmed = true;
 	m_triggerOneShot = true;
 }
 
 void TektronixOscilloscope::Stop()
 {
+	m_triggerReady = false;
 	m_triggerArmed = false;
 	m_transport->SendCommandQueued("ACQ:STATE STOP");
 	m_triggerOneShot = true;
@@ -2358,9 +2376,10 @@ void TektronixOscilloscope::Stop()
 
 void TektronixOscilloscope::ForceTrigger()
 {
+	m_triggerReady = true;
 	m_triggerArmed = true;
 	m_transport->SendCommandQueued("TRIG FORC");
-	m_triggerOneShot = true;
+	//m_triggerOneShot = true;
 }
 
 bool TektronixOscilloscope::IsTriggerArmed()
@@ -2376,14 +2395,41 @@ vector<uint64_t> TektronixOscilloscope::GetSampleRatesNonInterleaved()
 	const int64_t m = k*k;
 	const int64_t g = k*m;
 
-	uint64_t bases[] = { 1000, 1250, 2500, 3125, 5000, 6250 };
-	vector<uint64_t> scales = {1, 10, 100, 1*k};
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			{
+				uint64_t bases[] = { 2, 5, 10 };
+				vector<uint64_t> scales = {1* k, 10*k, 100*k, 1*m, 10*m};
+				
+				for(auto scale : scales)
+				{
+					for(auto b : bases)
+					{
+						ret.push_back(b * scale);
+					}
+
+				}
+				
+				ret.push_back(250 * m);
+				ret.push_back(500 * m);
+				ret.push_back(1250 * m);
+				ret.push_back(2500 * m);
+
+				// 5GS/s is an option
+				string reply = m_transport->SendCommandQueuedWithReply("ACQ:MAXS?");
+				// TODO: the programming doc has no example for 5GS/S, and i dont have the option
+				if (reply != "2.5000E+9")
+					ret.push_back(5000 * m);
+			}
+			break;
+
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			{
+				uint64_t bases[] = { 1000, 1250, 2500, 3125, 5000, 6250 };
+				vector<uint64_t> scales = {1, 10, 100, 1*k};
 				for(auto b : bases)
 					ret.push_back(b / 10);
 
@@ -2479,6 +2525,19 @@ vector<uint64_t> TektronixOscilloscope::GetSampleDepthsNonInterleaved()
 
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			{
+				ret.push_back(1 * k);
+				ret.push_back(10 * k);
+				ret.push_back(100 * k);
+				ret.push_back(1 * m);
+				ret.push_back(5 * m);
+				ret.push_back(10 * m);
+				ret.push_back(20 * m);
+
+			}
+			break;
+
 		//The scope allows extremely granular specification of memory depth.
 		//For our purposes, only show a bunch of common step values.
 		//No need for super fine granularity since record length isn't tied to the UI display width.
@@ -2601,6 +2660,18 @@ void TektronixOscilloscope::SetSampleDepth(uint64_t depth)
 	//Send it
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+		{
+			m_transport->SendCommandQueued(string("HOR:RECO ") + to_string(depth));
+			m_transport->SendCommandQueued("DAT:START 0");
+			m_transport->SendCommandQueued(string("DAT:STOP ") + to_string(depth));
+			
+			// since MDO4 doesn't have a direct sample rate setting, we need to update the timebase
+			double mdo4_rate = 1.0 * depth / m_sampleRate / 10;
+			m_transport->SendCommandQueued(string("HOR:SCA ") + to_string(mdo4_rate));
+		}
+			break;
+
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			m_transport->SendCommandQueued(string("HOR:MODE:RECO ") + to_string(depth));
@@ -2625,6 +2696,14 @@ void TektronixOscilloscope::SetSampleRate(uint64_t rate)
 	//Send it
 	switch(m_family)
 	{
+		case FAMILY_MDO4:
+			{
+			// MDO4 doesnt have a direct sample rate setting
+			double mdo4_rate = 1.0 * GetSampleDepth() / rate / 10;
+			m_transport->SendCommandQueued(string("HOR:SCA ") + to_string(mdo4_rate));
+			}
+			break; 
+
 		case FAMILY_MSO5:
 		case FAMILY_MSO6:
 			m_transport->SendCommandQueued(string("HOR:MODE:SAMPLER ") + to_string(rate));

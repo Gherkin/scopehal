@@ -376,6 +376,9 @@ protected:
 	///@brief Starting index for spectrum channels
 	size_t m_spectrumChannelBase;
 
+	///@brief True if trigger has been verified to be armed, false if not
+	bool m_triggerReady;
+
 	///@brief True if trigger is armed, false if idle
 	bool m_triggerArmed;
 
