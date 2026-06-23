@@ -1042,11 +1042,18 @@ void RohdeSchwarzOscilloscope::SetSampleRate(uint64_t /*rate*/)
 		case SERIES_RTB:
 			{
 				//RTB has no direct sample rate setting, must set time base
-				double rtb_rate = 1.0 
+				double rtb_rate = 1.0;
 				
 				
 			}
+			break;
+			
+		default: 
+			{
+
+			}
 	//FIXME
+	}
 }
 
 void RohdeSchwarzOscilloscope::SetTriggerOffset(int64_t offset)
